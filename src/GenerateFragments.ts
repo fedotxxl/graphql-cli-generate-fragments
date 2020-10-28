@@ -159,8 +159,28 @@ export class GenerateFragments {
       }
     });
 
+    const fragmentsToGenerate = (() => {
+      if (has(this.project.config, "extensions.generate-fragments.config.fragments-to-generate")) {
+        return get(
+            this.project.config,
+            "extensions.generate-fragments.config.fragments-to-generate"
+        );
+      }
+    });
+
+    const excludeFields = (() => {
+      if (has(this.project.config, "extensions.generate-fragments.config.exclude-fields")) {
+        return get(
+            this.project.config,
+            "extensions.generate-fragments.config.exclude-fields"
+        );
+      }
+    });
+
     return {
-      fragmentNamePrefix: fragmentNamePrefix()
+      fragmentNamePrefix: fragmentNamePrefix(),
+      fragmentsToGenerate: fragmentsToGenerate(),
+      excludeFields: excludeFields(),
     }
   }
 
@@ -204,8 +224,30 @@ export class GenerateFragments {
 
   private makeFragments(schemaContents: string, generator: string, generatorConfig: any) {
     const fragmentNamePrefix = generatorConfig.fragmentNamePrefix || "";
+    const fragmentsToGenerate = generatorConfig.fragmentsToGenerate || null;
+    const excludeFields = generatorConfig.excludeFields || {};
     const document: DocumentNode = parse(schemaContents, { noLocation: true });
     const ast: GraphQLSchema = buildASTSchema(document);
+
+    const isSkipFragment = (name: string) => {
+      return fragmentsToGenerate != null && fragmentsToGenerate.indexOf(name) === -1
+    }
+
+    const filterFields = (fragment, fields) => {
+      const excludeFieldsFragment = excludeFields[fragment];
+
+      if (excludeFieldsFragment == null) {
+        return fields
+      }
+
+      return fields.filter(field => {
+        const fieldName = (() => {
+          return field.substring(0, field.indexOf(" ")) || field
+        })
+
+        return excludeFieldsFragment.indexOf(fieldName()) === -1;
+      })
+    }
 
     const typeNames = Object.keys(ast.getTypeMap())
       .filter(
@@ -243,7 +285,14 @@ export class GenerateFragments {
       const type: any = ast.getType(typeName);
       const { name } = type;
 
-      const fields = this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.NO_RELATIONS, null);
+      if (isSkipFragment(name)) {
+        return null
+      }
+
+      const fields = filterFields(
+        name,
+        this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.NO_RELATIONS, null)
+      )
 
       if(fields.length === 0) {
         fields.push("__typename")
@@ -266,7 +315,14 @@ export class GenerateFragments {
       const type: any = ast.getType(typeName);
       const { name } = type;
 
-      const fields = this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.DEFAULT, null);
+      if (isSkipFragment(name)) {
+        return null
+      }
+
+        const fields = filterFields(
+            name,
+            this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.DEFAULT, null)
+        )
 
       if(fields.length === 0) {
         fields.push("__typename")
@@ -287,7 +343,14 @@ export class GenerateFragments {
       const type: any = ast.getType(typeName);
       const { name } = type;
 
-      const fields = this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.DEEP, null);
+      if (isSkipFragment(name)) {
+        return null
+      }
+
+        const fields = filterFields(
+            name,
+            this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.DEEP, null)
+        )
 
       if(fields.length === 0) {
         fields.push("__typename")
@@ -468,7 +531,7 @@ ${doGenerateGraphqlFragments()}
         " {" +
         this.indentedLine(indent + 1) +
         "..." + fragmentNamePrefix +
-        `${fragmentNameToInject}` +
+        `${fragmentNameToInject} @relay(mask: false)` +
         this.indentedLine(indent) +
         "}"
       );

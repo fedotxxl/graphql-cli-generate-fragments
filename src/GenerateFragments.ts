@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import * as fs from "fs-extra";
-import { GraphQLConfig, GraphQLProjectConfig } from "graphql-config";
+import {getGraphQLConfig, getGraphQLProjectConfig, GraphQLConfig, GraphQLProjectConfig} from "graphql-config";
 import { importSchema } from "graphql-import";
 import { get, has, merge } from "lodash";
 import * as path from "path";
@@ -32,10 +32,10 @@ export class GenerateFragments {
   private projectName: string;
   private project: GraphQLProjectConfig;
 
-  constructor(private context: any, private argv: Arguments) {}
+  constructor(private argv: Arguments) {}
 
   public async handle() {
-    this.config = await this.context.getConfig();
+    this.config = await getGraphQLConfig()
 
     // Get projects
     const projects: {
@@ -77,7 +77,7 @@ export class GenerateFragments {
         (has(this.project.config, "extensions.generate-fragments") ||
           has(this.project.config, "extensions.fragments")))
     ) {
-      this.context.spinner.start(
+      console.log(
         `Generating fragments for project ${this.projectDisplayName()}...`
       );
       fragmentsExtensionConfig = this.processFragments(
@@ -86,13 +86,13 @@ export class GenerateFragments {
           : undefined
       );
       merge(this.project.extensions, fragmentsExtensionConfig);
-      this.context.spinner.succeed(
+      console.log(
         `Fragments for project ${this.projectDisplayName()} written to ${chalk.green(
           fragmentsExtensionConfig["generate-fragments"].output
         )}`
       );
     } else if (this.argv.verbose) {
-      this.context.spinner.info(
+      console.log(
         `Generate Fragments not configured for project ${this.projectDisplayName()}. Skipping`
       );
     }
@@ -101,13 +101,13 @@ export class GenerateFragments {
   private save() {
     if (this.argv.save) {
       const configFile = path.basename(this.config.configPath);
-      this.context.spinner.start(
+      console.log(
         `Saving configuration for project ${this.projectDisplayName()} to ${chalk.green(
           configFile
         )}...`
       );
       this.saveConfig();
-      this.context.spinner.succeed(
+      console.log(
         `Configuration for project ${this.projectDisplayName()} saved to ${chalk.green(
           configFile
         )}`
@@ -141,17 +141,41 @@ export class GenerateFragments {
     return projects;
   }
 
+  private getGeneratorExtension(generator: string) {
+    if (generator === "relay") {
+      return "ts"
+    } else {
+      return generator
+    }
+  }
+
+  private getFragmentGeneratorConfig() {
+    const fragmentNamePrefix = (() => {
+      if (has(this.project.config, "extensions.generate-fragments.config.fragment-name-prefix")) {
+        return get(
+            this.project.config,
+            "extensions.generate-fragments.config.fragment-name-prefix"
+        );
+      }
+    });
+
+    return {
+      fragmentNamePrefix: fragmentNamePrefix()
+    }
+  }
+
   private processFragments(
     schemaPath: string | undefined
   ): { "generate-fragments": { output: string; generator: string } } {
     const generator: string = this.determineGenerator();
+    const generatorConfig = this.getFragmentGeneratorConfig()
     // TODO: This does not support custom generators
-    const extension = generator.endsWith("js") ? "js" : "graphql";
+    const extension = this.getGeneratorExtension(generator)
     const outputPath: string = this.determineFragmentsOutputPath(extension);
     const schema: string = this.determineInputSchema(schemaPath);
 
     const schemaContents: string = importSchema(schema); //******************************************* */
-    const fragments: string = this.makeFragments(schemaContents, extension);
+    const fragments: string = this.makeFragments(schemaContents, generator, generatorConfig);
 
     fs.writeFileSync(outputPath, fragments, { flag: "w" });
 
@@ -178,7 +202,8 @@ export class GenerateFragments {
     DEEP: "DeepNesting"
   };
 
-  private makeFragments(schemaContents: string, generator: string) {
+  private makeFragments(schemaContents: string, generator: string, generatorConfig: any) {
+    const fragmentNamePrefix = generatorConfig.fragmentNamePrefix || "";
     const document: DocumentNode = parse(schemaContents, { noLocation: true });
     const ast: GraphQLSchema = buildASTSchema(document);
 
@@ -192,7 +217,6 @@ export class GenerateFragments {
           (ast.getType(typeName) as GraphQLNamedType).constructor.name === "GraphQLObjectType"
       )
       .filter(typeName => !typeName.startsWith("__"))
-      .filter(typeName => typeName !== (ast.getQueryType() as GraphQLObjectType).name)
       .filter(
         typeName =>
           ast.getMutationType()
@@ -213,53 +237,110 @@ export class GenerateFragments {
       );
 
     // console.log(typeNames)
-
-    const standardFragments = typeNames.map(typeName => {
-      const type: any = ast.getType(typeName);
-      const { name } = type;
-
-      const fields = this.generateFragments(type, ast);
-      if(fields.length === 0) return null
-      return {
-        name,
-        fragment: `fragment ${name} on ${name} {
-  ${fields.join(this.indentedLine(1))}
-}
-`
-      };
-    }).filter(frag => frag != null);
+    const fragmentsGenerated = [];
 
     const noRelationsFragments = typeNames.map(typeName => {
       const type: any = ast.getType(typeName);
       const { name } = type;
 
-      const fields = this.generateFragments(type, ast, this.fragmentType.NO_RELATIONS);
-      if(fields.length === 0) return null
-      
+      const fields = this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.NO_RELATIONS, null);
+
+      if(fields.length === 0) {
+        fields.push("__typename")
+      }
+
+      fragmentsGenerated.push(name);
+
       return {
         name,
-        fragment: `fragment ${name}${
-          this.fragmentType.NO_RELATIONS
+        fragment: `fragment ${fragmentNamePrefix + name}${
+            this.fragmentType.NO_RELATIONS
         } on ${name} {
   ${fields.join(this.indentedLine(1))}
 }
 `
       };
     }).filter(frag => frag != null);
-    const deepFragments = typeNames.map(typeName => {
+
+    const standardFragments = typeNames.map(typeName => {
       const type: any = ast.getType(typeName);
       const { name } = type;
 
-      const fields = this.generateFragments(type, ast, this.fragmentType.DEEP);
-        if(fields.length === 0) return null
+      const fields = this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.DEFAULT, null);
+
+      if(fields.length === 0) {
+        fields.push("__typename")
+      }
+
+      fragmentsGenerated.push(name);
+
       return {
         name,
-        fragment: `fragment ${name}${this.fragmentType.DEEP} on ${name} {
+        fragment: `fragment ${fragmentNamePrefix + name} on ${name} {
   ${fields.join(this.indentedLine(1))}
 }
 `
       };
     }).filter(frag => frag != null);
+
+    const deepFragments = typeNames.map(typeName => {
+      const type: any = ast.getType(typeName);
+      const { name } = type;
+
+      const fields = this.generateFragments(type, ast, fragmentNamePrefix, this.fragmentType.DEEP, null);
+
+      if(fields.length === 0) {
+        fields.push("__typename")
+      }
+
+      fragmentsGenerated.push(name);
+
+      return {
+        name,
+        fragment: `fragment ${fragmentNamePrefix + name}${this.fragmentType.DEEP} on ${name} {
+  ${fields.join(this.indentedLine(1))}
+}
+`
+      };
+    }).filter(frag => frag != null);
+
+    const doGenerateGraphqlFragments = () => {
+      return `# THIS FILE HAS BEEN AUTO-GENERATED BY "graphql-cli-generate-fragments"
+# DO NOT EDIT THIS FILE DIRECTLY
+
+# Standard Fragments
+# Nested fragments will spread one layer deep
+
+${standardFragments
+          .map(
+              ({ name, fragment }) => `
+${fragment}`
+          )
+          .join("")}
+
+# No Relational objects
+# No nested fragments
+
+${noRelationsFragments
+          .map(
+              ({ name, fragment }) => `
+${fragment}`
+          )
+          .join("")}
+
+# Deeply nested Fragments
+# Will include n nested fragments
+# If there is a recursive relation you will receive a
+# "Cannot spread fragment within itself" error when using
+
+${deepFragments
+          .map(
+              ({ name, fragment }) => `
+${fragment}`
+          )
+          .join("")}
+`;
+    }
 
     if (generator === "js") {
       return `// THIS FILE HAS BEEN AUTO-GENERATED BY "graphql-cli-generate-fragments"
@@ -286,51 +367,30 @@ export const ${name}${this.fragmentType.DEEP}Fragment = \`${fragment}\`
         )
         .join("")}
 `;
+    } else if (generator == "relay") {
+      return `/* tslint:disable */
+/* eslint-disable */
+// @ts-nocheck
+
+import {graphql} from 'relay-runtime'
+
+graphql\`
+${doGenerateGraphqlFragments()}
+\`
+`
+    } else {
+      return doGenerateGraphqlFragments();
     }
-    return `# THIS FILE HAS BEEN AUTO-GENERATED BY "graphql-cli-generate-fragments"
-# DO NOT EDIT THIS FILE DIRECTLY
 
-# Standard Fragments
-# Nested fragments will spread one layer deep
-
-${standardFragments
-      .map(
-        ({ name, fragment }) => `
-${fragment}`
-      )
-      .join("")}
-
-# No Relational objects
-# No nested fragments
-
-${noRelationsFragments
-      .map(
-        ({ name, fragment }) => `
-${fragment}`
-      )
-      .join("")}
-
-# Deeply nested Fragments
-# Will include n nested fragments
-# If there is a recursive relation you will receive a
-# "Cannot spread fragment within itself" error when using
-
-${deepFragments
-      .map(
-        ({ name, fragment }) => `
-${fragment}`
-      )
-      .join("")}
-`;
   }
 
 
 
-  private generateFragments(type: any, ast: GraphQLSchema, fragmentType = this.fragmentType.DEFAULT) {
+  private generateFragments(type: any, ast: GraphQLSchema, fragmentNamePrefix: string, fragmentType: string, fragmentsGenerated: string[] = []) {
     const fields: GraphQLFieldMap<any, any> = type.getFields();
     const fragmentFields = Object.keys(fields)
       .map(field => {
-        return this.printField(field, fields[field], ast, fragmentType);
+        return this.printField(field, fields[field], ast, fragmentType, fragmentNamePrefix, fragmentsGenerated);
       })
       // Some fields should not be printed, ie. fields with relations.
       // Remove those from the output by returning null from printField.
@@ -342,6 +402,8 @@ ${fragment}`
     field,
     ast: GraphQLSchema,
     fragmentType,
+    fragmentNamePrefix,
+    fragmentsGenerated: string[] = [],
     indent = 1
   ) {
     let constructorName =
@@ -393,16 +455,20 @@ ${fragment}`
         (field.name && field.name.value) ||
         ((field.type.name.value && field.type.name.value) || field.type.name);
 
+      const fragmentNameToInject = (fragmentType === this.fragmentType.DEEP &&
+          typeName + this.fragmentType.DEEP) ||
+          (fragmentType === this.fragmentType.DEFAULT &&
+              typeName + this.fragmentType.NO_RELATIONS) ||
+          typeName + this.fragmentType.DEFAULT;
+
+      if (fragmentsGenerated != null && fragmentsGenerated.indexOf(fragmentNameToInject) === -1) return null;
+
       return (
         fieldName +
         " {" +
         this.indentedLine(indent + 1) +
-        "..." +
-        `${(fragmentType === this.fragmentType.DEEP &&
-          typeName + this.fragmentType.DEEP) ||
-          (fragmentType === this.fragmentType.DEFAULT &&
-          typeName + this.fragmentType.NO_RELATIONS) ||
-          typeName + this.fragmentType.DEFAULT}` +
+        "..." + fragmentNamePrefix +
+        `${fragmentNameToInject}` +
         this.indentedLine(indent) +
         "}"
       );
@@ -457,7 +523,7 @@ ${fragment}`
 
     console.log(schemaPath)
 
-  
+
     const getExtension = str => str.split('.').pop()
 
     if(getExtension(schemaPath) !== 'graphql' && getExtension(schemaPath) !== 'gql'){

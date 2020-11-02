@@ -1,0 +1,11 @@
+type TreeContentFlat {
+    nodes: [TreeContentFlatNode!]!
+}
+
+type TreeContentFlatNode {
+    id: String!
+    name: String!
+    kind: String!
+    parentId: String
+    parentKind: String
+}

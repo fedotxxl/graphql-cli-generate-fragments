@@ -1,6 +1,6 @@
 import chalk from "chalk";
 import * as fs from "fs-extra";
-import {getGraphQLConfig, getGraphQLProjectConfig, GraphQLConfig, GraphQLProjectConfig} from "graphql-config";
+import {getGraphQLConfig, GraphQLConfig, GraphQLProjectConfig} from "graphql-config";
 import {importSchema} from "graphql-import";
 import {get, has, merge} from "lodash";
 import * as path from "path";
@@ -260,6 +260,7 @@ export class GenerateFragments {
                     (ast.getType(typeName) as GraphQLNamedType).constructor.name === "GraphQLObjectType"
             )
             .filter(typeName => !typeName.startsWith("__"))
+            .filter(typeName => ast.getQueryType() ? typeName !== (ast.getQueryType() as GraphQLObjectType).name : true)
             .filter(
                 typeName =>
                     ast.getMutationType()
@@ -274,7 +275,7 @@ export class GenerateFragments {
             )
             .sort(
                 (a, b) =>
-                    (ast.getType(a) as GraphQLNamedType).constructor.name < (ast.getType(b) as GraphQLNamedType).constructor.name
+                    (ast.getType(a) as GraphQLNamedType).name < (ast.getType(b) as GraphQLNamedType).name
                         ? -1
                         : 1
             );
@@ -495,7 +496,7 @@ ${doGenerateGraphqlFragments()}
                 (field.type.name &&
                     (ast.getType(field.type.name.value) as GraphQLNamedType).constructor.name) ||
                 null;
-            if (constructorName === null) {
+            while (constructorName === null && field != null) {
                 field = (field.type && field.type) || null;
                 constructorName =
                     (field.type.name &&
@@ -673,5 +674,3 @@ ${doGenerateGraphqlFragments()}
 
     private projectDisplayName = () => chalk.green(this.projectName);
 }
-
-

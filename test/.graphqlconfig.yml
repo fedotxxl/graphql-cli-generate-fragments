@@ -1,0 +1,19 @@
+projects:
+  master:
+    schemaPath: ./schema.graphql
+    extensions:
+      generate-fragments:
+        output: ./master.fragments.ts
+        generator: relay
+        config:
+          fragment-name-prefix: master_
+          fragments-to-generate:
+            - TreeContentFlat
+            - TreeContentFlatNode
+          exclude-fields:
+            AcademicHomework:
+              - lesson
+            AcademicLesson:
+              - module
+            AcademicDisciplineModule:
+              - parent
